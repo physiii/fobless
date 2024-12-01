@@ -748,12 +748,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             spp_conn_id = 0xffff;
             memset(&spp_remote_bda, 0, sizeof(esp_bd_addr_t));
 
-            // Reset GPIOs to OFF (level 0)
-            const gpio_num_t gpio_pins[5] = {GPIO_POWER, GPIO_LOCK, GPIO_UNLOCK, GPIO_HORN, GPIO_TAILGATE};
-            for (int i = 0; i < 5; i++) {
-                gpio_set_level(gpio_pins[i], 0); // Set to OFF
-            }
-            ESP_LOGI(GATTS_TABLE_TAG, "All GPIOs reset to OFF (0)");
+            gpio_reset();
 
             // Restart advertising to allow reconnection
             esp_ble_gap_start_advertising(&spp_adv_params);

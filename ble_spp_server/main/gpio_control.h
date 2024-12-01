@@ -23,6 +23,7 @@
 // Function Prototypes
 void gpio_control_init(void);
 void process_integer_and_control_gpio(int received_int);
-void gpio_control_task(void *arg);  // Add this line
+void gpio_control_task(void *arg);
+void gpio_reset(void); 
 
 #endif // GPIO_CONTROL_H

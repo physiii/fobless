@@ -6,6 +6,9 @@
 #include "ble_spp_server_demo.h" // Include the header file for the BLE server
 #include "gpio_control.h"        // Include its own header
 
+#define OFF 1
+#define ON  0
+
 static const char *TAG = "GPIO_CONTROL";
 
 /**
@@ -24,6 +27,16 @@ static const char *TAG = "GPIO_CONTROL";
  * 
  * @param received_int The 8-bit integer representing GPIO states.
  */
+
+void gpio_reset(void)
+{
+    const gpio_num_t gpio_pins[5] = {GPIO_POWER, GPIO_LOCK, GPIO_UNLOCK, GPIO_HORN, GPIO_TAILGATE};
+    for (int i = 0; i < 5; i++) {
+        gpio_set_level(gpio_pins[i], OFF);
+    }
+    ESP_LOGI(TAG, "All GPIOs reset to OFF (0)");
+}
+
 void process_integer_and_control_gpio(int received_int)
 {
     ESP_LOGI(TAG, "Processing received integer: 0x%02X", received_int);
@@ -35,19 +48,26 @@ void process_integer_and_control_gpio(int received_int)
         // Extract the bit value
         int bit_val = (received_int >> bit) & 0x01;
 
-        // Determine the GPIO level based on bit value
-        // 0 -> ON (1), 1 -> OFF (0)
-        int gpio_level = (bit_val == 0) ? 1 : 0;
+        int val = bit_val ? ON : OFF;
 
         // Set the GPIO level
-        gpio_set_level(gpio_pins[bit], gpio_level);
+        gpio_set_level(gpio_pins[bit], val);
         ESP_LOGI(TAG, "GPIO_%s set to %d", 
                  (bit == 0) ? "POWER" :
                  (bit == 1) ? "LOCK" :
                  (bit == 2) ? "UNLOCK" :
                  (bit == 3) ? "HORN" : "TAILGATE", 
-                 gpio_level);
+                 bit_val);
     }
+
+    // Delay for 1 second
+    vTaskDelay(pdMS_TO_TICKS(3 * 1000));
+
+    // Reset all GPIOs to OFF except POWER
+    for (int i = 1; i < 5; i++) {
+        gpio_set_level(gpio_pins[i], OFF);
+    }
+    ESP_LOGI(TAG, "All GPIOs except POWER reset to OFF after 1 second delay.");
 }
 
 void gpio_control_task(void *arg)
@@ -85,15 +105,7 @@ void gpio_control_init(void)
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
     io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
-    io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 0;
-    gpio_config(&io_conf);
-
-    // Configure input GPIOs (unchanged)
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL;
-    io_conf.pull_down_en = 0;
+    io_conf.pull_down_en = 1;
     io_conf.pull_up_en = 1;
     gpio_config(&io_conf);
 
@@ -103,7 +115,7 @@ void gpio_control_init(void)
     // Initialize all output GPIOs to OFF (0) initially
     const gpio_num_t gpio_pins[5] = {GPIO_POWER, GPIO_LOCK, GPIO_UNLOCK, GPIO_HORN, GPIO_TAILGATE};
     for (int i = 0; i < 5; i++) {
-        gpio_set_level(gpio_pins[i], 0);
+        gpio_set_level(gpio_pins[i], OFF);
     }
     ESP_LOGI(TAG, "All output GPIOs initialized to OFF.");
 
