@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,9 +6,8 @@ import {
   Platform,
   Alert,
   StyleSheet,
-  Pressable
 } from 'react-native';
-import { BleManager, Device } from 'react-native-ble-plx';
+import { BleManager, Device, State } from 'react-native-ble-plx';
 import { Buffer } from 'buffer';
 import { 
   Provider as PaperProvider, 
@@ -54,6 +53,9 @@ const App: React.FC = () => {
   const [powerOn, setPowerOn] = useState(true);
   const [isLocked, setIsLocked] = useState(false);
 
+  // Keep track if we have already set the state listener
+  const stateListenerSet = useRef(false);
+
   useEffect(() => {
     async function requestPermissions() {
       let allGranted = true;
@@ -75,25 +77,51 @@ const App: React.FC = () => {
 
       // Auto-connect if permissions are granted
       if (allGranted) {
+        console.log('Permissions granted, turning connectOn = true and starting scan');
         setConnectOn(true);
         startScan();
       } else {
         Alert.alert('Permissions required', 'Need all BLE and location permissions granted.');
       }
     }
+
     requestPermissions();
+
+    // Set up the BLE state listener only once
+    if (!stateListenerSet.current) {
+      stateListenerSet.current = true;
+      manager.onStateChange((state) => {
+        console.log('Bluetooth state changed:', state);
+        if (state === State.PoweredOn && connectOn && !connectedDevice) {
+          console.log('Bluetooth PoweredOn and connectOn = true, starting scan');
+          startScan();
+        }
+      }, true);
+    }
 
     return () => {
       manager.stopDeviceScan();
     };
-  }, []);
+  }, [connectedDevice, connectOn]);
 
   const startScan = () => {
-    if (isScanning) {
-      manager.stopDeviceScan();
-      setIsScanning(false);
+    if (!connectOn) {
+      console.log('Cannot start scan because connectOn = false');
       return;
     }
+
+    if (connectedDevice) {
+      console.log('Already connected to a device, no need to scan');
+      return;
+    }
+
+    if (isScanning) {
+      console.log('Already scanning, stopping then restarting');
+      manager.stopDeviceScan();
+      setIsScanning(false);
+    }
+
+    console.log('Starting scan...');
     setScannedDevice(null);
     setIsScanning(true);
 
@@ -106,7 +134,7 @@ const App: React.FC = () => {
       }
 
       if (device && device.name === TARGET_DEVICE_NAME) {
-        console.log('Found device:', device.name);
+        console.log('Found device:', device.name, 'Stopping scan and connecting');
         manager.stopDeviceScan();
         setIsScanning(false);
         setScannedDevice(device);
@@ -116,18 +144,30 @@ const App: React.FC = () => {
   };
 
   const connectToDevice = async (device: Device) => {
+    if (!connectOn) {
+      console.log('connectOn is false, not connecting');
+      return;
+    }
+    console.log('Connecting to device:', device.name);
     setIsConnecting(true);
     try {
       const d = await device.connect();
       console.log('Connected to:', d.name);
       await d.discoverAllServicesAndCharacteristics();
       setConnectedDevice(d);
-      Alert.alert('Connected', `Successfully connected to ${d.name}`);
-      await sendCommand(POWER_ON_CODE); // Power on automatically once connected
+
+      // Automatically power on
+      await sendCommand(POWER_ON_CODE, false);
       setPowerOn(true);
+
+      manager.onDeviceDisconnected(d.id, () => {
+        console.log('Device disconnected');
+        setConnectedDevice(null);
+        // If connectOn is still true, the onStateChange listener should handle reconnection attempts when BLE is PoweredOn.
+      });
     } catch (error) {
       console.error('Connection error:', error);
-      Alert.alert('Connection Failed', 'Could not connect to the device.');
+      // Connection failed, turn off connectOn so user can retry
       setConnectOn(false);
     } finally {
       setIsConnecting(false);
@@ -136,27 +176,30 @@ const App: React.FC = () => {
 
   const disconnect = async () => {
     if (!connectedDevice) return;
+    console.log('Disconnecting from device');
     setIsConnecting(true);
     try {
       await connectedDevice.cancelConnection();
       setConnectedDevice(null);
-      Alert.alert('Disconnected', 'The device has been disconnected.');
+      setConnectOn(false);
     } catch (err) {
-      Alert.alert('Error', 'Failed to disconnect.');
-      console.error(err);
-      setConnectOn(true);
+      console.error('Failed to disconnect:', err);
     } finally {
       setIsConnecting(false);
     }
   };
 
-  const sendCommand = async (command: number) => {
+  const sendCommand = async (command: number, showAlerts: boolean = true) => {
     if (!connectedDevice) {
-      Alert.alert('Not connected', 'Please connect first.');
+      if (showAlerts) {
+        Alert.alert('Not connected', 'Please connect first.');
+      }
       return;
     }
     if (!powerOn && command !== POWER_OFF_CODE && command !== POWER_ON_CODE) {
-      Alert.alert('No Power', 'Power is off. Turn power on first.');
+      if (showAlerts) {
+        Alert.alert('No Power', 'Power is off. Turn power on first.');
+      }
       return;
     }
     setIsSending(true);
@@ -169,13 +212,16 @@ const App: React.FC = () => {
       console.log('Command sent:', command);
     } catch (error) {
       console.error('Write error:', error);
-      Alert.alert('Error', 'Failed to write command.');
+      if (showAlerts) {
+        Alert.alert('Error', 'Failed to write command.');
+      }
     } finally {
       setIsSending(false);
     }
   };
 
   const handleConnectToggle = (newVal: boolean) => {
+    console.log('Connect toggle changed to:', newVal);
     setConnectOn(newVal);
     if (newVal) {
       startScan();
@@ -185,6 +231,7 @@ const App: React.FC = () => {
   };
 
   const handlePowerToggle = async (newVal: boolean) => {
+    console.log('Power toggle changed to:', newVal);
     setPowerOn(newVal);
     await sendCommand(newVal ? POWER_ON_CODE : POWER_OFF_CODE);
   };
@@ -204,8 +251,19 @@ const App: React.FC = () => {
   };
 
   const isBusy = isConnecting || isSending;
-  const canInteract = !!connectedDevice && !isBusy; 
-  const isConnected = !!connectedDevice; 
+  const canInteract = !!connectedDevice && !isBusy;
+  const isConnected = !!connectedDevice;
+
+  let statusText = '';
+  if (!isConnected && !isScanning && !scannedDevice && connectOn) {
+    statusText = 'Connecting to device...';
+  } else if (isScanning) {
+    statusText = 'Scanning for device...';
+  } else if (scannedDevice && !isConnected) {
+    statusText = `Found ${scannedDevice.name}, connecting...`;
+  } else if (!connectOn && !isConnected) {
+    statusText = 'Toggle Connect to scan for the device.';
+  }
 
   return (
     <SafeAreaProvider>
@@ -226,7 +284,12 @@ const App: React.FC = () => {
 
           {/* Connection Toggle */}
           <View style={styles.row}>
-            <MaterialCommunityIcons name={connectOn ? "bluetooth" : "bluetooth-off"} size={24} color="#fff" style={{marginRight:5}} />
+            <MaterialCommunityIcons
+              name={connectOn ? "bluetooth" : "bluetooth-off"}
+              size={24}
+              color="#fff"
+              style={{ marginRight: 5 }}
+            />
             <Text style={styles.label}>Connect</Text>
             <Switch 
               value={connectOn}
@@ -238,7 +301,12 @@ const App: React.FC = () => {
           {/* Power Toggle */}
           {isConnected && (
             <View style={styles.row}>
-              <MaterialCommunityIcons name="power" size={24} color="#fff" style={{marginRight:5}} />
+              <MaterialCommunityIcons
+                name="power"
+                size={24}
+                color="#fff"
+                style={{ marginRight: 5 }}
+              />
               <Text style={styles.label}>Power On/Off</Text>
               <Switch 
                 value={powerOn}
@@ -248,6 +316,7 @@ const App: React.FC = () => {
             </View>
           )}
 
+          {/* Control Section */}
           {isConnected && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Controls</Text>
@@ -288,17 +357,12 @@ const App: React.FC = () => {
             </View>
           )}
 
-          {!isConnected && !isScanning && !scannedDevice && (
+          {/* Status Messages */}
+          {!isConnected && (
             <Text style={styles.infoText}>
-              Connecting to device...
+              {statusText}
             </Text>
           )}
-          {scannedDevice && !isConnected && !isScanning && (
-            <Text style={styles.infoText}>
-              Found {scannedDevice.name}, connecting...
-            </Text>
-          )}
-
         </View>
       </PaperProvider>
     </SafeAreaProvider>
